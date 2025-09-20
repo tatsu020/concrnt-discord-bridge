@@ -1,0 +1,17 @@
+{
+  "name": "concrnt-discord-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "node main.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@concrnt/client": "^0.0.23",
+    "@concrnt/worldlib": "^0.1.4",
+    "discord.js": "^14.22.1"
+  }
+}
