@@ -18,6 +18,44 @@ const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID
 const concrntClient = await ConcrntClient.create(CONCRNT_SECRET, CONCRNT_SERVER)
 let webhookClient = undefined
 
+const escapeMarkdownLinkText = (text) => String(text ?? 'media')
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+
+const isHttpUrl = (value) => {
+    try {
+        const url = new URL(value)
+        return url.protocol === 'http:' || url.protocol === 'https:'
+    } catch (_) {
+        return false
+    }
+}
+
+const formatMarkdownLink = (label, url) => {
+    if (!isHttpUrl(url)) return null
+    return `[${escapeMarkdownLinkText(label)}](${url})`
+}
+
+const buildConcrntMediaLines = (medias = []) => {
+    return medias
+        .map((media) => formatMarkdownLink(media.altText || media.mediaType || 'media', media.mediaURL))
+        .filter(Boolean)
+}
+
+const buildDiscordMedias = (attachments) => {
+    return Array.from(attachments.values())
+        .filter((attachment) => isHttpUrl(attachment.url))
+        .map((attachment) => ({
+            mediaURL: attachment.url,
+            mediaType: attachment.contentType || 'application/octet-stream',
+        }))
+}
+
+const buildContentWithMediaLinks = (body, mediaLines) => {
+    return [body, ...mediaLines].filter(Boolean).join('\n')
+}
+
 const socket = await concrntClient.newSocketListener()
 socket.on('MessageCreated', async (msg) => {
     console.log("Concrnt message:", msg)
@@ -35,9 +73,16 @@ socket.on('MessageCreated', async (msg) => {
     }
 
     const author = await concrntClient.getUser(doc.signer)
+    const mediaLines = buildConcrntMediaLines(body.medias)
+    const content = buildContentWithMediaLinks(body.body, mediaLines)
 
-    webhookClient.send({
-        content: body.body,
+    if (!content) {
+        console.log("Ignoring empty Concrnt message")
+        return
+    }
+
+    await webhookClient.send({
+        content,
         username: author?.profile?.username,
         avatarURL: author?.profile?.avatar,
     })
@@ -77,16 +122,38 @@ discordClient.on(Events.MessageCreate, async (message) => {
 
     if (message.channelId !== DISCORD_CHANNEL_ID) return;
 
-    await concrntClient.createMarkdownCrnt(
-        message.content,
-        [CONCRNT_TIMELINE],
-        {
-            profileOverride: {
-                username: message.author.username,
-                avatar: message.author.displayAvatarURL({ forceStatic: false, size: 256 }),
+    const medias = buildDiscordMedias(message.attachments)
+    const content = message.content
+
+    if (!content && medias.length === 0) {
+        console.log("Ignoring empty Discord message")
+        return
+    }
+
+    if (medias.length > 0) {
+        await concrntClient.createMediaCrnt(
+            content,
+            [CONCRNT_TIMELINE],
+            {
+                medias,
+                profileOverride: {
+                    username: message.author.username,
+                    avatar: message.author.displayAvatarURL({ forceStatic: false, size: 256 }),
+                }
             }
-        }
-    )
+        )
+    } else {
+        await concrntClient.createMarkdownCrnt(
+            content,
+            [CONCRNT_TIMELINE],
+            {
+                profileOverride: {
+                    username: message.author.username,
+                    avatar: message.author.displayAvatarURL({ forceStatic: false, size: 256 }),
+                }
+            }
+        )
+    }
 });
 
 discordClient.login(DISCORD_TOKEN);
