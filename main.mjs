@@ -58,12 +58,7 @@ const sortMediasForDiscordPreview = (medias = []) => {
 
 const buildConcrntMediaLines = (medias = []) => {
     return sortMediasForDiscordPreview(medias)
-        .map((media) => {
-            const label = isDiscordPreviewableMedia(media)
-                ? media.altText || media.mediaType || 'media'
-                : media.altText ? `📎 ${media.altText}` : '📎'
-            return formatMarkdownLink(label, media.mediaURL)
-        })
+        .map((media) => formatMarkdownLink(media.altText || media.mediaType || 'media', media.mediaURL))
         .filter(Boolean)
 }
 
