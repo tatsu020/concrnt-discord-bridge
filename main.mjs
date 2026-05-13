@@ -58,7 +58,12 @@ const sortMediasForDiscordPreview = (medias = []) => {
 
 const buildConcrntMediaLines = (medias = []) => {
     return sortMediasForDiscordPreview(medias)
-        .map((media) => formatMarkdownLink(media.altText || 'media', media.mediaURL))
+        .map((media) => {
+            const label = isDiscordPreviewableMedia(media)
+                ? media.altText || media.mediaType || 'media'
+                : media.altText ? `📎 ${media.altText}` : '📎'
+            return formatMarkdownLink(label, media.mediaURL)
+        })
         .filter(Boolean)
 }
 
@@ -88,10 +93,6 @@ const getBrowserLikeFileType = (filename = '') => {
 const getDiscordAttachmentMediaType = (attachment) => {
     const fileType = getBrowserLikeFileType(attachment.name)
     if (fileType) return fileType
-
-    if (attachment.name?.toLowerCase().endsWith('.glb')) {
-        return 'model/gltf-binary'
-    }
 
     return null
 }
