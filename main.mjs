@@ -37,23 +37,100 @@ const formatMarkdownLink = (label, url) => {
     return `[${escapeMarkdownLinkText(label)}](${url})`
 }
 
+const isDiscordPreviewableMedia = (media) => {
+    return media.mediaType?.startsWith('image') || media.mediaType?.startsWith('video')
+}
+
+const sortMediasForDiscordPreview = (medias = []) => {
+    const previewable = []
+    const fallback = []
+
+    for (const media of medias) {
+        if (isDiscordPreviewableMedia(media)) {
+            previewable.push(media)
+        } else {
+            fallback.push(media)
+        }
+    }
+
+    return [...previewable, ...fallback]
+}
+
 const buildConcrntMediaLines = (medias = []) => {
-    return medias
-        .map((media) => formatMarkdownLink(media.altText || media.mediaType || 'media', media.mediaURL))
+    return sortMediasForDiscordPreview(medias)
+        .map((media) => formatMarkdownLink(media.altText || 'media', media.mediaURL))
         .filter(Boolean)
 }
 
-const buildDiscordMedias = (attachments) => {
-    return Array.from(attachments.values())
-        .filter((attachment) => isHttpUrl(attachment.url))
-        .map((attachment) => ({
+const BROWSER_LIKE_FILE_TYPES = new Map([
+    ['.pdf', 'application/pdf'],
+    ['.png', 'image/png'],
+    ['.jpg', 'image/jpeg'],
+    ['.jpeg', 'image/jpeg'],
+    ['.gif', 'image/gif'],
+    ['.webp', 'image/webp'],
+    ['.avif', 'image/avif'],
+    ['.mp4', 'video/mp4'],
+    ['.mov', 'video/quicktime'],
+    ['.webm', 'video/webm'],
+    ['.mp3', 'audio/mpeg'],
+    ['.m4a', 'audio/mp4'],
+    ['.ogg', 'audio/ogg'],
+    ['.wav', 'audio/wav'],
+])
+
+const getBrowserLikeFileType = (filename = '') => {
+    const normalized = filename.toLowerCase()
+    const extension = normalized.slice(normalized.lastIndexOf('.'))
+    return BROWSER_LIKE_FILE_TYPES.get(extension) ?? ''
+}
+
+const getDiscordAttachmentMediaType = (attachment) => {
+    const fileType = getBrowserLikeFileType(attachment.name)
+    if (fileType) return fileType
+
+    if (attachment.name?.toLowerCase().endsWith('.glb')) {
+        return 'model/gltf-binary'
+    }
+
+    return null
+}
+
+const buildDiscordAttachmentPayload = (attachments) => {
+    const medias = []
+    const downloadLines = []
+
+    for (const attachment of attachments.values()) {
+        if (!isHttpUrl(attachment.url)) continue
+
+        const mediaType = getDiscordAttachmentMediaType(attachment)
+        if (!mediaType) {
+            const downloadLine = formatMarkdownLink(
+                attachment.name ? `📎 ${attachment.name}` : '📎',
+                attachment.url
+            )
+            if (downloadLine) downloadLines.push(downloadLine)
+            continue
+        }
+
+        medias.push({
             mediaURL: attachment.url,
-            mediaType: attachment.contentType || 'application/octet-stream',
-        }))
+            mediaType,
+        })
+    }
+
+    return { medias, downloadLines }
 }
 
 const buildContentWithMediaLinks = (body, mediaLines) => {
     return [body, ...mediaLines].filter(Boolean).join('\n')
+}
+
+const convertDetailsToDiscordSpoilers = (content = '') => {
+    return content.replace(
+        /<details>\s*<summary>[\s\S]*?<\/summary>\s*([\s\S]*?)\s*<\/details>/gi,
+        (_, body) => `||\n${body.trim()}\n||`
+    )
 }
 
 const socket = await concrntClient.newSocketListener()
@@ -74,7 +151,7 @@ socket.on('MessageCreated', async (msg) => {
 
     const author = await concrntClient.getUser(doc.signer)
     const mediaLines = buildConcrntMediaLines(body.medias)
-    const content = buildContentWithMediaLinks(body.body, mediaLines)
+    const content = buildContentWithMediaLinks(convertDetailsToDiscordSpoilers(body.body), mediaLines)
 
     if (!content) {
         console.log("Ignoring empty Concrnt message")
@@ -122,8 +199,8 @@ discordClient.on(Events.MessageCreate, async (message) => {
 
     if (message.channelId !== DISCORD_CHANNEL_ID) return;
 
-    const medias = buildDiscordMedias(message.attachments)
-    const content = message.content
+    const { medias, downloadLines } = buildDiscordAttachmentPayload(message.attachments)
+    const content = buildContentWithMediaLinks(message.content, downloadLines)
 
     if (!content && medias.length === 0) {
         console.log("Ignoring empty Discord message")
