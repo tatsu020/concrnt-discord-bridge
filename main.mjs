@@ -18,6 +18,117 @@ const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID
 const concrntClient = await ConcrntClient.create(CONCRNT_SECRET, CONCRNT_SERVER)
 let webhookClient = undefined
 
+const escapeMarkdownLinkText = (text) => String(text ?? 'media')
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+
+const isHttpUrl = (value) => {
+    try {
+        const url = new URL(value)
+        return url.protocol === 'http:' || url.protocol === 'https:'
+    } catch (_) {
+        return false
+    }
+}
+
+const formatMarkdownLink = (label, url) => {
+    if (!isHttpUrl(url)) return null
+    return `[${escapeMarkdownLinkText(label)}](${url})`
+}
+
+const isDiscordPreviewableMedia = (media) => {
+    return media.mediaType?.startsWith('image') || media.mediaType?.startsWith('video')
+}
+
+const sortMediasForDiscordPreview = (medias = []) => {
+    const previewable = []
+    const fallback = []
+
+    for (const media of medias) {
+        if (isDiscordPreviewableMedia(media)) {
+            previewable.push(media)
+        } else {
+            fallback.push(media)
+        }
+    }
+
+    return [...previewable, ...fallback]
+}
+
+const buildConcrntMediaLines = (medias = []) => {
+    return sortMediasForDiscordPreview(medias)
+        .map((media) => formatMarkdownLink(media.altText || media.mediaType || 'media', media.mediaURL))
+        .filter(Boolean)
+}
+
+const BROWSER_LIKE_FILE_TYPES = new Map([
+    ['.pdf', 'application/pdf'],
+    ['.png', 'image/png'],
+    ['.jpg', 'image/jpeg'],
+    ['.jpeg', 'image/jpeg'],
+    ['.gif', 'image/gif'],
+    ['.webp', 'image/webp'],
+    ['.avif', 'image/avif'],
+    ['.mp4', 'video/mp4'],
+    ['.mov', 'video/quicktime'],
+    ['.webm', 'video/webm'],
+    ['.mp3', 'audio/mpeg'],
+    ['.m4a', 'audio/mp4'],
+    ['.ogg', 'audio/ogg'],
+    ['.wav', 'audio/wav'],
+])
+
+const getBrowserLikeFileType = (filename = '') => {
+    const normalized = filename.toLowerCase()
+    const extension = normalized.slice(normalized.lastIndexOf('.'))
+    return BROWSER_LIKE_FILE_TYPES.get(extension) ?? ''
+}
+
+const getDiscordAttachmentMediaType = (attachment) => {
+    const fileType = getBrowserLikeFileType(attachment.name)
+    if (fileType) return fileType
+
+    return null
+}
+
+const buildDiscordAttachmentPayload = (attachments) => {
+    const medias = []
+    const downloadLines = []
+
+    for (const attachment of attachments.values()) {
+        if (!isHttpUrl(attachment.url)) continue
+
+        const mediaType = getDiscordAttachmentMediaType(attachment)
+        if (!mediaType) {
+            const downloadLine = formatMarkdownLink(
+                attachment.name ? `📎 ${attachment.name}` : '📎',
+                attachment.url
+            )
+            if (downloadLine) downloadLines.push(downloadLine)
+            continue
+        }
+
+        medias.push({
+            mediaURL: attachment.url,
+            mediaType,
+        })
+    }
+
+    return { medias, downloadLines }
+}
+
+const buildContentWithMediaLinks = (body, mediaLines) => {
+    return [body, ...mediaLines].filter(Boolean).join('\n')
+}
+
+const convertDetailsToDiscordSpoilers = (content = '') => {
+    return content.replace(
+        /<details>\s*<summary>[\s\S]*?<\/summary>\s*([\s\S]*?)\s*<\/details>/gi,
+        (_, body) => `||\n${body.trim()}\n||`
+    )
+}
+
 const socket = await concrntClient.newSocketListener()
 socket.on('MessageCreated', async (msg) => {
     console.log("Concrnt message:", msg)
@@ -35,9 +146,16 @@ socket.on('MessageCreated', async (msg) => {
     }
 
     const author = await concrntClient.getUser(doc.signer)
+    const mediaLines = buildConcrntMediaLines(body.medias)
+    const content = buildContentWithMediaLinks(convertDetailsToDiscordSpoilers(body.body), mediaLines)
 
-    webhookClient.send({
-        content: body.body,
+    if (!content) {
+        console.log("Ignoring empty Concrnt message")
+        return
+    }
+
+    await webhookClient.send({
+        content,
         username: author?.profile?.username,
         avatarURL: author?.profile?.avatar,
     })
@@ -77,16 +195,38 @@ discordClient.on(Events.MessageCreate, async (message) => {
 
     if (message.channelId !== DISCORD_CHANNEL_ID) return;
 
-    await concrntClient.createMarkdownCrnt(
-        message.content,
-        [CONCRNT_TIMELINE],
-        {
-            profileOverride: {
-                username: message.author.username,
-                avatar: message.author.displayAvatarURL({ forceStatic: false, size: 256 }),
+    const { medias, downloadLines } = buildDiscordAttachmentPayload(message.attachments)
+    const content = buildContentWithMediaLinks(message.content, downloadLines)
+
+    if (!content && medias.length === 0) {
+        console.log("Ignoring empty Discord message")
+        return
+    }
+
+    if (medias.length > 0) {
+        await concrntClient.createMediaCrnt(
+            content,
+            [CONCRNT_TIMELINE],
+            {
+                medias,
+                profileOverride: {
+                    username: message.author.username,
+                    avatar: message.author.displayAvatarURL({ forceStatic: false, size: 256 }),
+                }
             }
-        }
-    )
+        )
+    } else {
+        await concrntClient.createMarkdownCrnt(
+            content,
+            [CONCRNT_TIMELINE],
+            {
+                profileOverride: {
+                    username: message.author.username,
+                    avatar: message.author.displayAvatarURL({ forceStatic: false, size: 256 }),
+                }
+            }
+        )
+    }
 });
 
 discordClient.login(DISCORD_TOKEN);
